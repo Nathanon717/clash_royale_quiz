@@ -12,16 +12,16 @@ import kotlinx.coroutines.launch
 import kotlin.math.floor
 import kotlin.random.Random
 import com.example.helloandroid.data.CardData
-
-import androidx.lifecycle.viewModelScope
+import com.example.helloandroid.data.Deck
 import com.example.helloandroid.data.SettingsRepository
 import kotlinx.coroutines.flow.* // For stateIn, SharingStarted etc.
-import kotlinx.coroutines.launch
+
 
 // --- Enums and Data Classes for State ---
 
 enum class AppScreen {
-    HOME, CATEGORIZATION, QUIZ_SETUP, QUIZZING, RESULTS, SETTINGS
+    HOME, CATEGORIZATION, QUIZ_SETUP, QUIZZING, RESULTS, CATEGORIZATION_SETUP, DECKS,
+    COMBOS_SETUP, COMBOS_QUIZZING, COMBOS_RESULTS
 }
 
 enum class QuizSet {
@@ -86,7 +86,25 @@ data class QuizUiState(
     val categorizationRequiredPasses: Int = SettingsRepository.DEFAULT_REQUIRED_PASSES,
 
     // Keep track of loaded known cards separately if needed, or rely on knownCards
-    val initialKnownCardsLoaded: Boolean = false // Flag to know when loading is done
+    val initialKnownCardsLoaded: Boolean = false, // Flag to know when loading is done
+
+    // Decks State
+    val decks: List<Deck> = emptyList(),
+    val deckNameInput: String = "",
+    val selectedCardsForNewDeck: Set<String> = emptySet(),
+
+    // Combos Mode State
+    val selectedDeckForComboQuiz: Deck? = null,
+    val comboQuizTimerEnabled: Boolean = true,
+    val comboQuizTimerDurationSeconds: Int = 10, // Default
+    val comboQuizNumberOfQuestions: Int = 10, // Default, range 5-50
+    val comboQuizCardsPerCombo: Int = 2, // Default, 2 or 3
+    val currentComboCards: List<String> = emptyList(),
+    val currentComboCorrectCost: Int = 0,
+    val comboQuizCurrentQuestionIndex: Int = 0,
+    val comboQuizCorrectAnswers: Int = 0,
+    val comboQuizTimerValue: Float = 10.0f, // Default, similar to categorization timer
+    val comboQuizInputEnabled: Boolean = true
 ) {
     // Helper to get the current card name based on the active phase
     val currentCardName: String?
@@ -112,66 +130,58 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
     val uiState: StateFlow<QuizUiState> = _uiState.asStateFlow()
 
     private var categorizationTimerJob: Job? = null
+    private var comboQuizTimerJob: Job? = null
+
 
     // --- ViewModel Initialization ---
     init {
         loadInitialData()
+        loadDecks() // Call to load decks
     }
 
     private fun loadInitialData() {
         viewModelScope.launch {
-            // Combine flows for initial loading (optional, but cleaner)
             combine(
                 settingsRepository.timerDurationSeconds,
                 settingsRepository.requiredPasses,
                 settingsRepository.knownCards
+                // Removed combo settings from here as per revised subtask (no persistence)
             ) { timer, passes, known ->
-                Triple(timer, passes, known)
-            }.take(1) // Take only the first emission for initial setup
-                .collect { (timer, passes, known) ->
-                    _uiState.update {
-                        it.copy(
-                            categorizationTimerDurationSeconds = timer,
-                            categorizationRequiredPasses = passes,
-                            knownCards = known,
-                            initialKnownCardsLoaded = true // Mark loading complete
-                            // unknownCards can be derived, no need to store separately in state usually
-                        )
-                    }
+                // Using a more complex structure or multiple updates if needed
+                _uiState.update {
+                    it.copy(
+                        categorizationTimerDurationSeconds = timer,
+                        categorizationRequiredPasses = passes,
+                        knownCards = known,
+                        initialKnownCardsLoaded = true // Mark loading complete
+                        // Combo settings will use defaults from QuizUiState
+                    )
                 }
+            }.take(1) // Ensure this runs once for initial setup
+                .collect() // Collect to trigger the flow
         }
-
-        // Optional: Keep observing settings changes if you want the app to react live
-        // viewModelScope.launch { settingsRepository.timerDurationSeconds.collect { timer -> _uiState.update { it.copy(categorizationTimerDurationSeconds = timer) } } }
-        // viewModelScope.launch { settingsRepository.requiredPasses.collect { passes -> _uiState.update { it.copy(categorizationRequiredPasses = passes) } } }
-        // viewModelScope.launch { settingsRepository.knownCards.collect { known -> _uiState.update { it.copy(knownCards = known) } } }
-        // Note: Live updates might reset ongoing quizzes if not handled carefully. The current approach loads once at start.
     }
 
     // --- Navigation ---
     fun navigateTo(screen: AppScreen) {
         val currentState = _uiState.value // Get state *before* update
 
-        // Cancel timer if navigating away from categorization
-        if (currentState.currentScreen == AppScreen.CATEGORIZATION) {
+        if (currentState.currentScreen == AppScreen.CATEGORIZATION && screen != AppScreen.CATEGORIZATION) {
             categorizationTimerJob?.cancel()
-            // Optionally reset categorization state fully if desired when navigating away
-            // _uiState.update { it.copy(categorizationPass = 0, ... etc ...) }
         }
-
-        // Reset quiz state if navigating away from quizzing/results? (Optional)
-        // if (currentState.currentScreen == AppScreen.QUIZZING || currentState.currentScreen == AppScreen.RESULTS) {
-        //     _uiState.update { it.copy(quizCardsCurrentPass = emptyList(), ...) }
-        // }
+        if (currentState.currentScreen == AppScreen.COMBOS_QUIZZING && screen != AppScreen.COMBOS_QUIZZING) {
+            comboQuizTimerJob?.cancel()
+        }
 
 
         _uiState.update {
             it.copy(
                 currentScreen = screen,
                 feedbackMessage = null, // Clear feedback on navigate
-                // Reset timer value visual if leaving categorization screen
-                categorizationTimerValue = if (currentState.currentScreen == AppScreen.CATEGORIZATION) 3.0f else it.categorizationTimerValue,
-                categorizationInputEnabled = true // Ensure input is re-enabled when navigating away
+                categorizationTimerValue = if (currentState.currentScreen == AppScreen.CATEGORIZATION && screen != AppScreen.CATEGORIZATION) it.categorizationTimerDurationSeconds.toFloat() else it.categorizationTimerValue,
+                categorizationInputEnabled = true,
+                comboQuizTimerValue = if (currentState.currentScreen == AppScreen.COMBOS_QUIZZING && screen != AppScreen.COMBOS_QUIZZING) it.comboQuizTimerDurationSeconds.toFloat() else it.comboQuizTimerValue,
+                comboQuizInputEnabled = true
             )
         }
     }
@@ -179,7 +189,7 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
     // --- Categorization Logic ---
 
     fun startCategorization() {
-        if (!_uiState.value.initialKnownCardsLoaded) return // Prevent starting before load
+        if (!_uiState.value.initialKnownCardsLoaded) return
 
         val initialCards = _uiState.value.allCards.keys.sorted()
         _uiState.update {
@@ -190,17 +200,16 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
                 categorizationCurrentIndex = 0,
                 categorizationFailedCards = emptySet(),
                 categorizationNextPassCandidates = emptySet(),
-                // DO NOT reset known/unknown cards here, keep loaded ones until successful save
                 isLoading = false
             )
         }
-        startCardTimer() // Start timer using loaded duration
+        startCardTimer()
     }
 
     private fun startCardTimer() {
         categorizationTimerJob?.cancel()
         val currentState = _uiState.value
-        val timeoutMs = currentState.categorizationTimerDurationSeconds * 1000L // Use state value
+        val timeoutMs = currentState.categorizationTimerDurationSeconds * 1000L
         val initialTimerValue = timeoutMs / 1000f
 
         _uiState.update { it.copy(categorizationTimerValue = initialTimerValue, categorizationInputEnabled = true) }
@@ -208,12 +217,10 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
             val startTime = System.currentTimeMillis()
             while (System.currentTimeMillis() - startTime < timeoutMs) {
                 val remaining = timeoutMs - (System.currentTimeMillis() - startTime)
-                // Prevent negative display due to slight delays
                 _uiState.update { it.copy(categorizationTimerValue = (remaining / 1000f).coerceAtLeast(0f)) }
                 delay(50)
             }
-            // Ensure timer value hits exactly 0 if timeout occurs
-            if (_uiState.value.categorizationInputEnabled) { // Check if timeout happened before submission
+            if (_uiState.value.categorizationInputEnabled) {
                 _uiState.update { it.copy(categorizationTimerValue = 0f) }
                 handleCategorizationTimeout()
             }
@@ -221,13 +228,12 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
     }
 
     fun submitCategorizationGuess(guessInt: Int) {
-        categorizationTimerJob?.cancel() // Stop timer on submission
-        _uiState.update { it.copy(categorizationInputEnabled = false)} // Disable input while processing
+        categorizationTimerJob?.cancel()
+        _uiState.update { it.copy(categorizationInputEnabled = false)}
 
         val currentState = _uiState.value
         val cardName = currentState.currentCardName ?: return
         val correctCost = currentState.currentCorrectCost ?: return
-        // val guessInt = guessStr.toIntOrNull() // No longer needed
 
         var feedback = ""
         var correct = false
@@ -244,27 +250,22 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
                 it.copy(categorizationFailedCards = it.categorizationFailedCards + cardName)
             }
         }
-
         showTemporaryFeedback(feedback) {
-            moveToNextCategorizationCard(correct) // Move after showing feedback
+            moveToNextCategorizationCard(correct)
         }
     }
 
     private fun handleCategorizationTimeout() {
-        // This function is called by the timer job when time runs out *before* submission
-        viewModelScope.launch { // Ensure updates happen on main thread context if needed
-            if (!_uiState.value.categorizationInputEnabled) return@launch // Already processed submission
-
-            _uiState.update { it.copy(categorizationInputEnabled = false)} // Disable input
-
+        viewModelScope.launch {
+            if (!_uiState.value.categorizationInputEnabled) return@launch
+            _uiState.update { it.copy(categorizationInputEnabled = false)}
             val currentState = _uiState.value
             val cardName = currentState.currentCardName ?: return@launch
-
             _uiState.update {
                 it.copy(categorizationFailedCards = it.categorizationFailedCards + cardName)
             }
             showTemporaryFeedback("Time's up! Marked as unknown.") {
-                moveToNextCategorizationCard(false) // Treat timeout as incorrect
+                moveToNextCategorizationCard(false)
             }
         }
     }
@@ -273,18 +274,12 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
         viewModelScope.launch {
             val currentState = _uiState.value
             val nextIndex = currentState.categorizationCurrentIndex + 1
-
             if (nextIndex < currentState.categorizationCardsCurrentPass.size) {
-                // More cards in this pass
                 _uiState.update {
-                    it.copy(
-                        categorizationCurrentIndex = nextIndex,
-                        feedbackMessage = null // Clear feedback for next card
-                    )
+                    it.copy(categorizationCurrentIndex = nextIndex, feedbackMessage = null)
                 }
-                startCardTimer() // Start timer for the new card
+                startCardTimer()
             } else {
-                // End of pass
                 finishCategorizationPass()
             }
         }
@@ -293,26 +288,21 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
     private fun finishCategorizationPass() {
         val currentState = _uiState.value
         val currentPass = currentState.categorizationPass
-        val requiredPasses = currentState.categorizationRequiredPasses // Use state value
+        val requiredPasses = currentState.categorizationRequiredPasses
         val successfulThisPass = currentState.categorizationNextPassCandidates
         val failedOverall = currentState.categorizationFailedCards
 
-        // Check for completion: >= required passes OR no cards passed this round
         if (currentPass >= requiredPasses || successfulThisPass.isEmpty()) {
-            // Final pass complete (or ended early) - THIS IS WHERE WE SAVE
-            val finalKnown = if (currentPass >= requiredPasses) successfulThisPass else emptySet() // Only save if required passes met
+            val finalKnown = if (currentPass >= requiredPasses) successfulThisPass else emptySet()
             val finalUnknown = currentState.allCards.keys.filter { it in failedOverall || it !in finalKnown }.toSet()
-
-            // Save the successfully determined known cards
             viewModelScope.launch {
                 try {
                     settingsRepository.saveKnownCards(finalKnown)
-                    // Update UI state *after* successful save
                     _uiState.update {
                         it.copy(
                             currentScreen = AppScreen.HOME,
-                            knownCards = finalKnown, // Update state with the newly saved list
-                            unknownCards = finalUnknown, // Update derived unknown
+                            knownCards = finalKnown,
+                            unknownCards = finalUnknown,
                             categorizationPass = 0,
                             categorizationCardsCurrentPass = emptyList(),
                             categorizationCurrentIndex = 0,
@@ -322,26 +312,19 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
                         )
                     }
                 } catch (e: Exception) {
-                    // Handle saving error (e.g., show message)
                     _uiState.update {
                         it.copy(
-                            currentScreen = AppScreen.HOME, // Still go home
+                            currentScreen = AppScreen.HOME,
                             feedbackMessage = "Categorization Complete. Error saving results.",
-                            // Keep UI state reflecting the just-calculated lists, even if save failed? Or revert?
-                            knownCards = finalKnown,
-                            unknownCards = finalUnknown,
-                            // Reset categorization state fields anyway
-                            categorizationPass = 0,
-                            categorizationCardsCurrentPass = emptyList(),
-                            categorizationCurrentIndex = 0,
-                            categorizationFailedCards = emptySet(),
+                            knownCards = finalKnown, unknownCards = finalUnknown,
+                            categorizationPass = 0, categorizationCardsCurrentPass = emptyList(),
+                            categorizationCurrentIndex = 0, categorizationFailedCards = emptySet(),
                             categorizationNextPassCandidates = emptySet()
                         )
                     }
                 }
             }
         } else {
-            // Prepare for the next pass (Logic remains the same)
             val cardsForNextPass = successfulThisPass.toList().sorted()
             _uiState.update {
                 it.copy(
@@ -352,202 +335,262 @@ class QuizViewModel(private val settingsRepository: SettingsRepository) : ViewMo
                     feedbackMessage = null
                 )
             }
-            if (cardsForNextPass.isNotEmpty()) {
-                startCardTimer()
-            } else {
-                // This case (empty successfulThisPass) is handled by the completion check above
-                // but call finishCategorizationPass again just to be safe if logic changes
-                finishCategorizationPass()
-            }
+            if (cardsForNextPass.isNotEmpty()) startCardTimer() else finishCategorizationPass()
         }
     }
 
     // --- Quiz Setup ---
-    fun selectQuizSetOption(set: QuizSet) {
-        _uiState.update { it.copy(selectedQuizSet = set) }
-    }
-
-    fun selectQuizOrderOption(order: QuizOrder) {
-        _uiState.update { it.copy(selectedQuizOrder = order) }
-    }
+    fun selectQuizSetOption(set: QuizSet) { _uiState.update { it.copy(selectedQuizSet = set) } }
+    fun selectQuizOrderOption(order: QuizOrder) { _uiState.update { it.copy(selectedQuizOrder = order) } }
 
     fun startQuiz() {
-        if (!_uiState.value.initialKnownCardsLoaded) return // Prevent starting before load
+        if (!_uiState.value.initialKnownCardsLoaded) return
         val currentState = _uiState.value
         val cardPool = when (currentState.selectedQuizSet) {
             QuizSet.ALL -> currentState.allCards.keys
-            QuizSet.KNOWN -> currentState.knownCards.ifEmpty { currentState.allCards.keys } // Fallback if empty
-            QuizSet.UNKNOWN -> {
-                // Calculate unknown if not explicitly stored or derive it
-                val unknown = currentState.allCards.keys - currentState.knownCards
-                unknown.ifEmpty { currentState.allCards.keys } // Fallback if empty
-            }
+            QuizSet.KNOWN -> currentState.knownCards.ifEmpty { currentState.allCards.keys }
+            QuizSet.UNKNOWN -> (currentState.allCards.keys - currentState.knownCards).ifEmpty { currentState.allCards.keys }
         }
-
         if (cardPool.isEmpty()) {
             _uiState.update { it.copy(feedbackMessage = "Selected card set is empty!") }
             return
         }
-
         var initialQuizCards = cardPool.toList()
-        if (currentState.selectedQuizOrder == QuizOrder.RANDOM) {
-            initialQuizCards = initialQuizCards.shuffled(Random(System.currentTimeMillis()))
-        } else {
-            initialQuizCards = initialQuizCards.sorted()
-        }
-
+        initialQuizCards = if (currentState.selectedQuizOrder == QuizOrder.RANDOM) initialQuizCards.shuffled(Random(System.currentTimeMillis())) else initialQuizCards.sorted()
         val quizSetName = when (currentState.selectedQuizSet) {
-            QuizSet.ALL -> "All Cards"
-            QuizSet.KNOWN -> "Known Cards"
-            QuizSet.UNKNOWN -> "Unknown Cards"
+            QuizSet.ALL -> "All Cards"; QuizSet.KNOWN -> "Known Cards"; QuizSet.UNKNOWN -> "Unknown Cards"
         }
-
-
         _uiState.update {
             it.copy(
                 currentScreen = AppScreen.QUIZZING,
-                quizCardsCurrentPass = initialQuizCards,
-                quizCurrentIndex = 0,
-                quizCardsForNextPass = mutableSetOf(),
-                quizCurrentPassNumber = 1,
-                quizStats = QuizStats( // Reset stats
-                    totalCardsInQuiz = initialQuizCards.size,
-                    startTime = System.currentTimeMillis(),
-                    quizSetName = quizSetName
-                ),
-                feedbackMessage = null,
-                isLoading = false
+                quizCardsCurrentPass = initialQuizCards, quizCurrentIndex = 0,
+                quizCardsForNextPass = mutableSetOf(), quizCurrentPassNumber = 1,
+                quizStats = QuizStats(totalCardsInQuiz = initialQuizCards.size, startTime = System.currentTimeMillis(), quizSetName = quizSetName),
+                feedbackMessage = null, isLoading = false
             )
         }
     }
 
     // --- Quizzing Logic ---
-
     fun submitQuizGuess(guessInt: Int) {
         val currentState = _uiState.value
         val cardName = currentState.currentCardName ?: return
         val correctCost = currentState.currentCorrectCost ?: return
-        // val guessInt = guessStr.toIntOrNull() // No longer needed
         val isFirstGuessForThisCardInPass = !currentState.quizCardsForNextPass.contains(cardName)
-
-        _uiState.update { st ->
-            st.copy(quizStats = st.quizStats.copy(totalGuesses = st.quizStats.totalGuesses + 1))
-        }
-
+        _uiState.update { st -> st.copy(quizStats = st.quizStats.copy(totalGuesses = st.quizStats.totalGuesses + 1)) }
         if (guessInt == correctCost) {
             val correctFeedback = "Correct! ($correctCost Elixir)"
             _uiState.update { st ->
-                st.copy(quizStats = if (isFirstGuessForThisCardInPass) {
-                    st.quizStats.copy(correctFirstTry = st.quizStats.correctFirstTry + 1)
-                } else {
-                    st.quizStats
-                }
-                )
+                st.copy(quizStats = if (isFirstGuessForThisCardInPass) st.quizStats.copy(correctFirstTry = st.quizStats.correctFirstTry + 1) else st.quizStats)
             }
-            showTemporaryFeedback(correctFeedback) {
-                moveToNextQuizCard()
-            }
+            showTemporaryFeedback(correctFeedback) { moveToNextQuizCard() }
         } else {
             val incorrectFeedback = if (isFirstGuessForThisCardInPass) {
                 _uiState.update { st ->
-                    st.copy(
-                        quizCardsForNextPass = st.quizCardsForNextPass.apply { add(cardName) },
-                        quizStats = st.quizStats.copy(neededPractice = st.quizStats.neededPractice + 1)
-                    )
+                    st.copy(quizCardsForNextPass = st.quizCardsForNextPass.apply { add(cardName) },
+                            quizStats = st.quizStats.copy(neededPractice = st.quizStats.neededPractice + 1))
                 }
                 "Incorrect. Added to review."
-            } else {
-                "Incorrect. Try again..."
-            }
-            _uiState.update { it.copy(feedbackMessage = incorrectFeedback)}
+            } else "Incorrect. Try again..."
+            _uiState.update { it.copy(feedbackMessage = incorrectFeedback) }
         }
     }
 
     private fun moveToNextQuizCard() {
         viewModelScope.launch {
-            val currentState = _uiState.value
-            val nextIndex = currentState.quizCurrentIndex + 1
-
+            val currentState = _uiState.value; val nextIndex = currentState.quizCurrentIndex + 1
             if (nextIndex < currentState.quizCardsCurrentPass.size) {
-                // More cards in this pass
-                _uiState.update {
-                    it.copy(
-                        quizCurrentIndex = nextIndex,
-                        feedbackMessage = null // Clear feedback
-                    )
-                }
-            } else {
-                // End of pass
-                finishQuizPass()
-            }
+                _uiState.update { it.copy(quizCurrentIndex = nextIndex, feedbackMessage = null) }
+            } else finishQuizPass()
         }
     }
 
     private fun finishQuizPass() {
-        val currentState = _uiState.value
-        val cardsForReview = currentState.quizCardsForNextPass.toList()
-
+        val currentState = _uiState.value; val cardsForReview = currentState.quizCardsForNextPass.toList()
         if (cardsForReview.isEmpty()) {
-            // Quiz complete!
             _uiState.update { st ->
-                st.copy(
-                    currentScreen = AppScreen.RESULTS,
-                    quizStats = st.quizStats.copy(
-                        endTime = System.currentTimeMillis(),
-                        totalPasses = st.quizCurrentPassNumber // Record final pass number
-                    ),
-                    feedbackMessage = "Quiz Complete!"
-                )
+                st.copy(currentScreen = AppScreen.RESULTS,
+                        quizStats = st.quizStats.copy(endTime = System.currentTimeMillis(), totalPasses = st.quizCurrentPassNumber),
+                        feedbackMessage = "Quiz Complete!")
             }
         } else {
-            // Start next review pass
-            var nextPassCards = cardsForReview
-            if (currentState.selectedQuizOrder == QuizOrder.RANDOM) {
-                nextPassCards = nextPassCards.shuffled(Random(System.currentTimeMillis()))
-            } else {
-                nextPassCards = nextPassCards.sorted()
-            }
-
+            var nextPassCards = if (currentState.selectedQuizOrder == QuizOrder.RANDOM) cardsForReview.shuffled(Random(System.currentTimeMillis())) else cardsForReview.sorted()
             _uiState.update {
-                it.copy(
-                    quizCardsCurrentPass = nextPassCards,
-                    quizCurrentIndex = 0,
-                    quizCardsForNextPass = mutableSetOf(), // Reset for the new pass
-                    quizCurrentPassNumber = it.quizCurrentPassNumber + 1,
-                    feedbackMessage = null
-                )
+                it.copy(quizCardsCurrentPass = nextPassCards, quizCurrentIndex = 0,
+                        quizCardsForNextPass = mutableSetOf(), quizCurrentPassNumber = it.quizCurrentPassNumber + 1,
+                        feedbackMessage = null)
             }
         }
     }
 
     // --- Settings Logic ---
     fun saveTimerSetting(seconds: Int) {
-        viewModelScope.launch {
-            settingsRepository.saveCategorizationTimer(seconds)
-            // Update UI immediately for responsiveness
-            _uiState.update { it.copy(categorizationTimerDurationSeconds = seconds) }
-        }
+        viewModelScope.launch { settingsRepository.saveCategorizationTimer(seconds) }
+        _uiState.update { it.copy(categorizationTimerDurationSeconds = seconds) }
     }
-
     fun savePassesSetting(passes: Int) {
-        viewModelScope.launch {
-            settingsRepository.saveCategorizationPasses(passes)
-            // Update UI immediately
-            _uiState.update { it.copy(categorizationRequiredPasses = passes) }
-        }
+        viewModelScope.launch { settingsRepository.saveCategorizationPasses(passes) }
+        _uiState.update { it.copy(categorizationRequiredPasses = passes) }
     }
 
     // --- Utility ---
     private fun showTemporaryFeedback(message: String, onFinished: () -> Unit = {}) {
         viewModelScope.launch {
             _uiState.update { it.copy(feedbackMessage = message) }
-            delay(1200L) // Show feedback for 1.2 seconds
-            _uiState.update { it.copy(feedbackMessage = null) }
-            onFinished() // Execute callback after feedback duration
+            delay(1200L); _uiState.update { it.copy(feedbackMessage = null) }; onFinished()
+        }
+    }
+    fun clearFeedback() { _uiState.update { it.copy(feedbackMessage = null) } }
+
+    // --- Decks Logic ---
+    fun updateDeckNameInput(name: String) { _uiState.update { it.copy(deckNameInput = name) } }
+    fun toggleCardSelectionForNewDeck(cardName: String) {
+        _uiState.update { current ->
+            val sel = current.selectedCardsForNewDeck
+            if (sel.contains(cardName)) current.copy(selectedCardsForNewDeck = sel - cardName)
+            else if (sel.size < 8) current.copy(selectedCardsForNewDeck = sel + cardName)
+            else current.copy(feedbackMessage = "You can only select up to 8 cards.")
+        }
+    }
+    fun saveNewDeck() {
+        val current = _uiState.value
+        if (current.deckNameInput.isBlank()) { _uiState.update { it.copy(feedbackMessage = "Deck name cannot be empty.") }; return }
+        if (current.selectedCardsForNewDeck.size != 8) { _uiState.update { it.copy(feedbackMessage = "You must select exactly 8 cards.") }; return }
+        val newDeck = Deck(name = current.deckNameInput, cards = current.selectedCardsForNewDeck)
+        val updatedDecks = current.decks + newDeck
+        viewModelScope.launch {
+            try {
+                settingsRepository.saveDecks(updatedDecks)
+                _uiState.update { it.copy(decks = updatedDecks, deckNameInput = "", selectedCardsForNewDeck = emptySet(), feedbackMessage = "Deck '${newDeck.name}' saved successfully!") }
+            } catch (e: Exception) { _uiState.update { it.copy(feedbackMessage = "Error saving deck: ${e.localizedMessage}") } }
+        }
+    }
+    private fun loadDecks() {
+        viewModelScope.launch { settingsRepository.decks.collect { ld -> _uiState.update { it.copy(decks = ld) } } }
+    }
+
+    // --- Combo Quiz Logic ---
+    fun selectDeckForComboQuiz(deck: Deck) { _uiState.update { it.copy(selectedDeckForComboQuiz = deck) } }
+    fun setComboTimerEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(comboQuizTimerEnabled = enabled) }
+        // viewModelScope.launch { settingsRepository.saveComboTimerEnabled(enabled) } // Persistence excluded
+    }
+    fun setComboTimerDuration(seconds: Int) {
+        _uiState.update { it.copy(comboQuizTimerDurationSeconds = seconds, comboQuizTimerValue = seconds.toFloat()) }
+        // viewModelScope.launch { settingsRepository.saveComboTimerDuration(seconds) } // Persistence excluded
+    }
+    fun setComboNumberOfQuestions(count: Int) {
+        val clampedCount = count.coerceIn(5, 50)
+        _uiState.update { it.copy(comboQuizNumberOfQuestions = clampedCount) }
+        // viewModelScope.launch { settingsRepository.saveComboNumQuestions(clampedCount) } // Persistence excluded
+    }
+    fun setComboCardsPerCombo(count: Int) {
+        val clampedCount = count.coerceIn(2, 3)
+        _uiState.update { it.copy(comboQuizCardsPerCombo = clampedCount) }
+        // viewModelScope.launch { settingsRepository.saveComboCardsPerCombo(clampedCount) } // Persistence excluded
+    }
+
+    fun startComboQuiz() {
+        val currentState = _uiState.value
+        if (currentState.selectedDeckForComboQuiz == null) {
+            _uiState.update { it.copy(feedbackMessage = "Please select a deck first!") }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                currentScreen = AppScreen.COMBOS_QUIZZING,
+                comboQuizCurrentQuestionIndex = 0,
+                comboQuizCorrectAnswers = 0,
+                feedbackMessage = null,
+                comboQuizInputEnabled = true,
+                comboQuizTimerValue = it.comboQuizTimerDurationSeconds.toFloat() // Reset timer value
+            )
+        }
+        generateNextCombo()
+    }
+
+    private fun generateNextCombo() {
+        val currentState = _uiState.value
+        if (currentState.comboQuizCurrentQuestionIndex >= currentState.comboQuizNumberOfQuestions) {
+            navigateTo(AppScreen.COMBOS_RESULTS)
+            return
+        }
+
+        currentState.selectedDeckForComboQuiz?.cards?.let { deckCards ->
+            if (deckCards.size < currentState.comboQuizCardsPerCombo) {
+                // Should not happen if deck validation is correct (8 cards)
+                _uiState.update { it.copy(feedbackMessage = "Selected deck has too few cards for this combo size.", currentScreen = AppScreen.COMBOS_SETUP) }
+                return
+            }
+            val combo = deckCards.shuffled().take(currentState.comboQuizCardsPerCombo)
+            val cost = combo.sumOf { cardName -> currentState.allCards[cardName] ?: 0 }
+            _uiState.update {
+                it.copy(
+                    currentComboCards = combo,
+                    currentComboCorrectCost = cost,
+                    comboQuizInputEnabled = true,
+                    feedbackMessage = null, // Clear previous feedback
+                    comboQuizTimerValue = it.comboQuizTimerDurationSeconds.toFloat() // Reset timer for new question
+                )
+            }
+            if (currentState.comboQuizTimerEnabled) {
+                startComboCardTimer()
+            }
+        } ?: run {
+            // Fallback if deck is somehow null, though startComboQuiz should prevent this
+             _uiState.update { it.copy(currentScreen = AppScreen.COMBOS_SETUP, feedbackMessage = "Error: No deck selected for combo quiz.") }
         }
     }
 
-    fun clearFeedback() {
-        _uiState.update { it.copy(feedbackMessage = null)}
+    private fun startComboCardTimer() {
+        comboQuizTimerJob?.cancel()
+        val currentState = _uiState.value
+        val timeoutMs = currentState.comboQuizTimerDurationSeconds * 1000L
+        _uiState.update { it.copy(comboQuizTimerValue = timeoutMs / 1000f, comboQuizInputEnabled = true) }
+
+        comboQuizTimerJob = viewModelScope.launch {
+            val startTime = System.currentTimeMillis()
+            while (System.currentTimeMillis() - startTime < timeoutMs) {
+                val remaining = timeoutMs - (System.currentTimeMillis() - startTime)
+                _uiState.update { it.copy(comboQuizTimerValue = (remaining / 1000f).coerceAtLeast(0f)) }
+                delay(50)
+            }
+            if (_uiState.value.comboQuizInputEnabled) { // Check if still enabled (i.e., not answered)
+                _uiState.update { it.copy(comboQuizTimerValue = 0f) }
+                handleComboTimeout()
+            }
+        }
+    }
+
+    fun submitComboGuess(guessInt: Int) {
+        comboQuizTimerJob?.cancel()
+        _uiState.update { it.copy(comboQuizInputEnabled = false) }
+
+        val currentState = _uiState.value
+        val correct = guessInt == currentState.currentComboCorrectCost
+        val feedback: String
+
+        if (correct) {
+            _uiState.update { it.copy(comboQuizCorrectAnswers = it.comboQuizCorrectAnswers + 1) }
+            feedback = "Correct!"
+        } else {
+            feedback = "Incorrect! Cost was ${currentState.currentComboCorrectCost}"
+        }
+
+        showTemporaryFeedback(feedback) {
+            _uiState.update { it.copy(comboQuizCurrentQuestionIndex = it.comboQuizCurrentQuestionIndex + 1) }
+            generateNextCombo()
+        }
+    }
+
+    private fun handleComboTimeout() {
+        viewModelScope.launch {
+            if (!_uiState.value.comboQuizInputEnabled) return@launch // Already processed submission
+            _uiState.update { it.copy(comboQuizInputEnabled = false) }
+            showTemporaryFeedback("Time's up!") {
+                _uiState.update { it.copy(comboQuizCurrentQuestionIndex = it.comboQuizCurrentQuestionIndex + 1) }
+                generateNextCombo()
+            }
+        }
     }
 }

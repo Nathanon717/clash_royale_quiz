@@ -37,14 +37,17 @@ import androidx.compose.material3.LinearProgressIndicator // Already likely ther
 import com.example.helloandroid.ui.components.NumberPad
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModel
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+//import androidx.compose.material.icons.automirrored.filled.ArrowBack // Already imported
+//import androidx.compose.material3.* // Already imported
+//import androidx.compose.runtime.* // Already imported
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
+//import androidx.compose.ui.unit.dp // Already imported
 import androidx.lifecycle.viewmodel.compose.viewModel // Use this for factory
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+//import androidx.lifecycle.compose.collectAsStateWithLifecycle // Already imported
+import com.example.helloandroid.data.Deck
+import com.example.helloandroid.ui.components.NumberPadLayout
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 // --- ViewModel Factory ---
 // Needed to pass arguments (the repository) to the ViewModel constructor
@@ -100,7 +103,11 @@ fun QuizApp(viewModel: QuizViewModel) {
                 AppScreen.QUIZ_SETUP -> QuizSetupScreen(uiState, viewModel)
                 AppScreen.QUIZZING -> QuizzingScreen(uiState, viewModel)
                 AppScreen.RESULTS -> ResultsScreen(uiState, viewModel)
-                AppScreen.SETTINGS -> SettingsScreen(uiState, viewModel) // Add Settings case
+                AppScreen.CATEGORIZATION_SETUP -> CategorizationSetupScreen(uiState, viewModel)
+                AppScreen.DECKS -> DecksScreen(uiState, viewModel) // Handle Decks screen
+                AppScreen.COMBOS_SETUP -> CombosSetupScreen(uiState, viewModel)
+                AppScreen.COMBOS_QUIZZING -> CombosQuizzingScreen(uiState, viewModel)
+                AppScreen.COMBOS_RESULTS -> CombosResultsScreen(uiState, viewModel)
             }
         }
 
@@ -123,7 +130,7 @@ fun HomeScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
         Text("Clash Royale Quiz", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(32.dp))
 
-        Button(onClick = { viewModel.startCategorization() }) {
+        Button(onClick = { viewModel.navigateTo(AppScreen.CATEGORIZATION_SETUP) }) {
             // Dynamically show passes/timer in button text
             Text("Run Categorization (${uiState.categorizationRequiredPasses} passes, ${uiState.categorizationTimerDurationSeconds}s timer)")
         }
@@ -133,10 +140,21 @@ fun HomeScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
         }
         Spacer(modifier = Modifier.height(16.dp))
         // Add Settings Button
-        OutlinedButton(onClick = { viewModel.navigateTo(AppScreen.SETTINGS) }) {
-            Text("Settings")
+        OutlinedButton(onClick = { viewModel.navigateTo(AppScreen.CATEGORIZATION_SETUP) }) {
+            Text("Categorization Setup")
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        // Add Decks Button
+        OutlinedButton(onClick = { viewModel.navigateTo(AppScreen.DECKS) }) {
+            Text("Manage Decks")
+        }
+        Spacer(modifier = Modifier.height(16.dp)) // Spacer after Decks button
+        // Add Combos Quiz Button
+        OutlinedButton(onClick = { viewModel.navigateTo(AppScreen.COMBOS_SETUP) }) {
+            Text("Start Combos Quiz")
         }
         Spacer(modifier = Modifier.height(24.dp))
+
 
         if (uiState.knownCardCount > 0 || uiState.unknownCardCount > 0) {
             Text("Current Saved Lists:", style = MaterialTheme.typography.titleMedium)
@@ -236,7 +254,7 @@ fun CategorizationScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
 }
 
 @Composable
-fun SettingsScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
+fun CategorizationSetupScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -255,7 +273,7 @@ fun SettingsScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Home")
             }
             Text(
-                "Settings",
+                "Categorization Setup",
                 style = MaterialTheme.typography.headlineSmall, // Adjusted style
                 textAlign = TextAlign.Center,
                 modifier = Modifier.weight(1f) // Center title
@@ -308,6 +326,14 @@ fun SettingsScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
         Text("Current: ${uiState.categorizationRequiredPasses} passes")
 
         Spacer(modifier = Modifier.height(32.dp))
+
+        // --- Start Categorization Button ---
+        Button(onClick = { viewModel.startCategorization() }) {
+            Text("Start Categorization")
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
 
         // --- Feedback ---
         feedbackMessage?.let {
@@ -513,6 +539,403 @@ fun ResultsScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class) // For FlowRow and ExposedDropdownMenuBox
+@Composable
+fun DecksScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // --- Back Button and Title ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { viewModel.navigateTo(AppScreen.HOME) }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Home")
+            }
+            Text(
+                "Manage Decks",
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(48.dp)) // Balance for IconButton
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- Create New Deck Section ---
+        Text("Create New Deck", style = MaterialTheme.typography.titleLarge)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = uiState.deckNameInput,
+            onValueChange = { viewModel.updateDeckNameInput(it) },
+            label = { Text("Deck Name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text("Select 8 Cards (Selected: ${uiState.selectedCardsForNewDeck.size}/8)", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Scrollable area for card selection
+        Box(modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 200.dp) // Limit height of card selection area
+            .verticalScroll(rememberScrollState())
+        ) {
+            FlowRow( // Auto-wraps items to next line
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                uiState.allCards.keys.sorted().forEach { cardName ->
+                    val isSelected = uiState.selectedCardsForNewDeck.contains(cardName)
+                    Button(
+                        onClick = { viewModel.toggleCardSelectionForNewDeck(cardName) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        modifier = Modifier.padding(2.dp) // Minimal padding around each button
+                    ) {
+                        Text(cardName, fontSize = 12.sp) // Smaller font for card names
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Selected: ${uiState.selectedCardsForNewDeck.joinToString(", ")}")
+
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(
+            onClick = { viewModel.saveNewDeck() },
+            enabled = uiState.deckNameInput.isNotBlank() && uiState.selectedCardsForNewDeck.size == 8,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Save Deck")
+        }
+
+        uiState.feedbackMessage?.let {
+            Text(
+                it,
+                color = if (it.contains("Error") || it.contains("cannot") || it.contains("must")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+            // Auto-clear feedback after a delay
+            LaunchedEffect(it) { // it refers to feedbackMessage
+                delay(3000L) // Show for 3 seconds
+                viewModel.clearFeedback()
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // --- List of Existing Decks ---
+        Text("Your Decks (${uiState.decks.size})", style = MaterialTheme.typography.titleLarge)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (uiState.decks.isEmpty()) {
+            Text("No decks saved yet. Create one above!")
+        } else {
+            uiState.decks.forEach { deck ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(deck.name, style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Cards: ${deck.cards.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- New Composables for Combos Quiz ---
+
+@OptIn(ExperimentalMaterial3Api::class) // For ExposedDropdownMenuBox
+@Composable
+fun CombosSetupScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
+    var deckMenuExpanded by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()), // Make screen scrollable
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // Back Button and Title
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { viewModel.navigateTo(AppScreen.HOME) }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Home")
+            }
+            Text(
+                "Combos Quiz Setup",
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(48.dp)) // Balance for IconButton
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Deck Selection
+        Text("Select Deck", style = MaterialTheme.typography.titleMedium)
+        if (uiState.decks.isEmpty()) {
+            Text("No decks available. Please create a deck first in 'Manage Decks'.")
+        } else {
+            ExposedDropdownMenuBox(
+                expanded = deckMenuExpanded,
+                onExpandedChange = { deckMenuExpanded = !deckMenuExpanded }
+            ) {
+                OutlinedTextField(
+                    value = uiState.selectedDeckForComboQuiz?.name ?: "Select a deck",
+                    onValueChange = {}, // Not directly editable
+                    readOnly = true,
+                    label = { Text("Deck") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = deckMenuExpanded) },
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = deckMenuExpanded,
+                    onDismissRequest = { deckMenuExpanded = false }
+                ) {
+                    uiState.decks.forEach { deck ->
+                        DropdownMenuItem(
+                            text = { Text(deck.name) },
+                            onClick = {
+                                viewModel.selectDeckForComboQuiz(deck) // ViewModel function
+                                deckMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Timer Settings
+        Text("Timer Settings", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Enable Timer")
+            Spacer(modifier = Modifier.width(8.dp))
+            Switch(
+                checked = uiState.comboQuizTimerEnabled,
+                onCheckedChange = { viewModel.setComboTimerEnabled(it) // ViewModel function
+                }
+            )
+        }
+        if (uiState.comboQuizTimerEnabled) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                listOf(5, 10, 15).forEach { duration ->
+                    Button(
+                        onClick = { viewModel.setComboTimerDuration(duration) // ViewModel function
+                        },
+                        enabled = uiState.comboQuizTimerDurationSeconds != duration
+                    ) {
+                        Text("${duration}s")
+                    }
+                }
+            }
+            Text("Current: ${uiState.comboQuizTimerDurationSeconds}s")
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Number of Questions
+        Text("Number of Questions: ${uiState.comboQuizNumberOfQuestions}", style = MaterialTheme.typography.titleMedium)
+        Slider(
+            value = uiState.comboQuizNumberOfQuestions.toFloat(),
+            onValueChange = { viewModel.setComboNumberOfQuestions(it.roundToInt()) // ViewModel function
+            },
+            valueRange = 5f..50f,
+            steps = (50-5-1), // (max - min - 1 step) to make each step an integer
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Cards per Combo
+        Text("Cards per Combo", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(2, 3).forEach { count ->
+                Button(
+                    onClick = { viewModel.setComboCardsPerCombo(count) // ViewModel function
+                    },
+                    enabled = uiState.comboQuizCardsPerCombo != count
+                ) {
+                    Text("$count Cards")
+                }
+            }
+        }
+        Text("Current: ${uiState.comboQuizCardsPerCombo}")
+        Spacer(modifier = Modifier.height(32.dp))
+
+        // Start Quiz Button
+        Button(
+            onClick = { viewModel.startComboQuiz() // ViewModel function
+            },
+            enabled = uiState.selectedDeckForComboQuiz != null,
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            Text("Start Combos Quiz")
+        }
+
+        uiState.feedbackMessage?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+            LaunchedEffect(it) {
+                delay(3000)
+                viewModel.clearFeedback() // ViewModel function
+            }
+        }
+    }
+}
+
+@Composable
+fun CombosQuizzingScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Back Button and Title Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = {
+                // TODO: Implement confirmation dialog if quiz is in progress
+                viewModel.navigateTo(AppScreen.HOME) // Or COMBOS_SETUP, ends quiz
+            }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Home")
+            }
+            Text(
+                "Combos Quiz",
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(48.dp)) // Balance for IconButton
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Question Counter
+        Text(
+            "Question ${uiState.comboQuizCurrentQuestionIndex + 1} / ${uiState.comboQuizNumberOfQuestions}",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Timer Display (if enabled)
+        if (uiState.comboQuizTimerEnabled) {
+            LinearProgressIndicator(
+                progress = { uiState.comboQuizTimerValue / uiState.comboQuizTimerDurationSeconds.toFloat() },
+                modifier = Modifier.fillMaxWidth(0.8f)
+            )
+            Text(String.format("%.1fs", uiState.comboQuizTimerValue))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Display Current Combo Cards
+        if (uiState.currentComboCards.isNotEmpty()) {
+            Text(
+                text = uiState.currentComboCards.joinToString(" + "),
+                style = MaterialTheme.typography.headlineMedium,
+                textAlign = TextAlign.Center
+            )
+        } else {
+            Text("Loading combo...", style = MaterialTheme.typography.headlineMedium)
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // NumberPad for Combos
+        NumberPad(
+            onNumberClick = { guess -> viewModel.submitComboGuess(guess) },
+            enabled = uiState.comboQuizInputEnabled,
+            layoutType = NumberPadLayout.COMBOS
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Feedback Message
+        uiState.feedbackMessage?.let {
+            Text(
+                it,
+                color = if (it.startsWith("Correct")) Color.Green else MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge
+            )
+        }
+
+        Spacer(modifier = Modifier.weight(1f)) // Push content to center
+    }
+}
+
+@Composable
+fun CombosResultsScreen(uiState: QuizUiState, viewModel: QuizViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Combos Quiz Complete!", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        val accuracy = if (uiState.comboQuizNumberOfQuestions > 0) {
+            (uiState.comboQuizCorrectAnswers.toDouble() / uiState.comboQuizNumberOfQuestions * 100)
+        } else {
+            0.0 // Avoid division by zero if no questions were asked
+        }
+        Text(
+            "Accuracy: ${String.format("%.1f", accuracy)}%",
+            style = MaterialTheme.typography.titleLarge
+        )
+        Text(
+            "Score: ${uiState.comboQuizCorrectAnswers} / ${uiState.comboQuizNumberOfQuestions}",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Button(onClick = { viewModel.navigateTo(AppScreen.COMBOS_SETUP) }) {
+                Text("Play Again")
+            }
+            Button(onClick = { viewModel.navigateTo(AppScreen.HOME) }) {
+                Text("Back to Home")
+            }
+        }
+    }
+}
 
 // --- Preview --- (Optional, helps in Android Studio design pane)
 @Preview(showBackground = true)
